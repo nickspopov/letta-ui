@@ -15,19 +15,27 @@ is not modified.
 ## Features
 
 - Chat with any local Letta agent. Messages are rendered as markdown (GFM: tables,
-  task lists, code blocks).
+  task lists), and code blocks get syntax highlighting and a **Copy** button.
 - Agent → you: images, videos (seekable), audio, and files through `MessageChannel`
-  (`action: "upload-file"`, `media: <local path>`).
+  (`action: "upload-file"`, `media: <local path>`). Consecutive screenshots are grouped
+  into a **grid**, and the lightbox pages through them with ←/→. **Show in Finder** reveals
+  any received file on disk.
 - You → agent: attach, paste, or drag-and-drop files. Small images are also inlined for
   the model.
+- While the agent works you see the current step, an expandable list of **steps** (tool
+  calls), and a **Stop** button (sends Letta's `/cancel`).
+- **Desktop notifications** (🔔) for replies that arrive in the background, plus unread
+  counters, per-conversation "working…" dots, and an `(N)` count in the tab title.
 - Sidebar: agents → conversations. **+ New** creates a conversation and binds it to the
-  web chat right away, no restart needed. **Rename** syncs the title back to Letta, so
-  `/resume` in the TUI shows it too.
+  web chat right away, no restart needed. **Rename** and **Archive** sync back to Letta,
+  so `/resume` in the TUI shows the same titles.
+- **⌘K** jumps to any conversation of any agent. Typing **/** in the composer suggests
+  Letta's channel commands (`/cancel`, `/model`, `/reflection`, `/status`, …).
 - Conversations that belong to other channels (Slack, Telegram, …) or the TUI are listed as
-  **read-only** history. You can't send into them from here, so the web UI never drives a
-  conversation another channel owns.
-- Unread counters, a "working…" indicator per conversation, and an `(N)` count in the tab
-  title.
+  **read-only** history. You can't send into, rename, or archive them from here, so the
+  web UI never drives a conversation another channel owns.
+- Installable as an app (PWA): Chrome → ⋮ → *Cast, save, and share* → *Install page as
+  app*, or Safari → *File → Add to Dock*. It then opens in its own window with a Dock icon.
 
 ## Requirements
 
@@ -133,8 +141,9 @@ There is no automatic cleanup yet.
 
 ```
 src/plugin.mjs          channel plugin: adapter, HTTP server, SSE, message store, App Server client
-public/                 the page: index.html, app.js, style.css
-public/vendor/          marked 18.2.0 (MIT), DOMPurify 3.4.17 (Apache-2.0 / MPL-2.0), unmodified
+public/                 the page: index.html, app.js, style.css, manifest + icons
+public/vendor/          marked 18.2.0 (MIT), DOMPurify 3.4.17 (Apache-2.0 / MPL-2.0),
+                        highlight.js 11.12.0 (BSD-3-Clause), unmodified
 scripts/install.sh      installs the channel stub into ~/.letta/channels/webui
 scripts/cdp-smoke.mjs   headless-Chrome smoke check over the DevTools protocol
 ```

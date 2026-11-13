@@ -4,6 +4,7 @@
 //
 // No dependencies: node:http + Server-Sent Events, so it runs under Bun or Node.
 
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -33,6 +34,7 @@ const MIME = {
   ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json",
+  ".webmanifest": "application/manifest+json",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -304,6 +306,7 @@ function createWebUiAdapter(account) {
       title: c.summary || null,
       lastAt: c.last_message_at || c.updated_at || c.created_at,
       chatId: byConv.get(c.id) ?? null,
+      archived: c.archived === true,
     }));
     // Routed conversations the backend list didn't return (e.g. created after
     // this process scanned storage) still need to be reachable.
@@ -507,6 +510,7 @@ function createWebUiAdapter(account) {
       if (req.method === "GET" && (p === "/" || p === "/index.html")) return serveFile(req, res, join(PUBLIC_DIR, "index.html"));
       if (req.method === "GET" && (p === "/app.js" || p === "/style.css")) return serveFile(req, res, join(PUBLIC_DIR, p.slice(1)));
       if (req.method === "GET" && /^\/vendor\/[\w.\-]+$/.test(p)) return serveFile(req, res, join(PUBLIC_DIR, p.slice(1)));
+      if (req.method === "GET" && /^\/(manifest\.webmanifest|icon(-\d+)?\.(png|svg))$/.test(p)) return serveFile(req, res, join(PUBLIC_DIR, p.slice(1)));
       if (req.method === "GET" && p === "/api/chats") return sendJson(res, 200, { accountId: account.accountId, chats: listChats() });
       if (req.method === "GET" && p === "/api/agents") return sendJson(res, 200, { agents: await listAgents() });
       if (req.method === "GET" && p === "/api/conversations") {
@@ -516,6 +520,26 @@ function createWebUiAdapter(account) {
         const conv = url.searchParams.get("conversation") ?? "";
         if (listChats().some((c) => c.conversationId === conv)) return sendJson(res, 400, { error: "routed to webui; use /api/history" });
         return sendJson(res, 200, await readOnlyHistory(conv, url.searchParams.get("before")));
+      }
+      if (req.method === "POST" && p === "/api/reveal") {
+        if (req.headers.origin && !allowedHosts.has(req.headers.origin.replace(/^https?:\/\//, ""))) return sendJson(res, 403, { error: "bad origin" });
+        const body = JSON.parse((await readBody(req, 16 * 1024)).toString("utf8") || "{}");
+        const m = /^\/(media|uploads)\/([^/]+)$/.exec(String(body.url ?? ""));
+        if (!m) return sendJson(res, 400, { error: "not a local media url" });
+        const dir = m[1] === "media" ? store.mediaDir : store.uploadsDir;
+        const file = resolve(dir, decodeURIComponent(m[2]));
+        if (!file.startsWith(dir + sep) || !existsSync(file)) return sendJson(res, 404, { error: "file not found" });
+        const [cmd, args] = process.platform === "darwin" ? ["open", ["-R", file]] : ["xdg-open", [dirname(file)]];
+        spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+        return sendJson(res, 200, { ok: true, path: file });
+      }
+      if (req.method === "POST" && p === "/api/archive") {
+        if (req.headers.origin && !allowedHosts.has(req.headers.origin.replace(/^https?:\/\//, ""))) return sendJson(res, 403, { error: "bad origin" });
+        const body = JSON.parse((await readBody(req, 16 * 1024)).toString("utf8") || "{}");
+        const chat = listChats().find((c) => c.conversationId === body.conversationId);
+        if (!chat) return sendJson(res, 400, { error: "only webui conversations can be archived here" });
+        await app.request({ type: "conversation_update", conversation_id: chat.conversationId, body: { archived: body.archived !== false } });
+        return sendJson(res, 200, { ok: true });
       }
       if (req.method === "POST" && (p === "/api/chats" || p === "/api/rename")) {
         if (req.headers.origin && !allowedHosts.has(req.headers.origin.replace(/^https?:\/\//, ""))) {
@@ -627,7 +651,19 @@ function createWebUiAdapter(account) {
     async handleTurnProgressEvent(event) {
       const detail = event.toolBatchTitle || event.toolTitle || event.message || null;
       for (const s of event.sources ?? []) {
-        if (s.channel === CHANNEL_ID) setStatus(s.chatId, "processing", detail);
+        if (s.channel !== CHANNEL_ID) continue;
+        setStatus(s.chatId, "processing", detail);
+        broadcast({
+          type: "progress",
+          chatId: s.chatId,
+          kind: event.kind ?? null,
+          state: event.state ?? null,
+          toolCallId: event.toolCallId ?? null,
+          toolName: event.toolName ?? null,
+          title: event.toolTitle || event.message || event.toolName || null,
+          details: event.toolDetails ?? null,
+          error: event.errorDetails ?? null,
+        });
       }
     },
   };

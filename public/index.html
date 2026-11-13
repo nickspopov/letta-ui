@@ -3,33 +3,62 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#1d2027" />
   <title>Letta UI</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="stylesheet" href="/vendor/hljs-github-dark.min.css" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <aside id="sidebar">
-    <div class="brand">Letta UI <span id="conn" class="conn">connecting…</span></div>
+    <div class="brand">
+      Letta UI
+      <button id="notify" class="icon-btn" title="Desktop notifications">🔕</button>
+      <button id="palette-btn" class="icon-btn" title="Jump to conversation (⌘K)">⌘K</button>
+      <span id="conn" class="conn">connecting…</span>
+    </div>
     <div id="agents"></div>
   </aside>
   <section id="main">
     <header>
       <strong id="title">—</strong>
       <span id="subtitle" class="subtitle"></span>
+      <span class="spacer"></span>
       <button id="rename" class="ghost" hidden>Rename</button>
+      <button id="archive" class="ghost" hidden>Archive</button>
     </header>
     <main id="log"></main>
-    <div id="status" class="status" hidden></div>
+    <div id="status" class="status" hidden>
+      <span class="pulse">●</span>
+      <span id="status-text"></span>
+      <button id="steps-toggle" class="link" hidden></button>
+      <button id="stop" class="ghost danger">Stop</button>
+      <ol id="steps" hidden></ol>
+    </div>
     <form id="composer">
       <div id="pending" class="pending"></div>
+      <ul id="cmd-menu" hidden></ul>
       <div class="row">
         <label class="attach" title="Attach files">📎<input id="file" type="file" multiple hidden /></label>
-        <textarea id="text" rows="2" placeholder="Message… (Enter to send, Shift+Enter for newline; paste or drop images)"></textarea>
+        <textarea id="text" rows="2" placeholder="Message… (Enter to send, Shift+Enter for newline, / for commands; paste or drop images)"></textarea>
         <button type="submit">Send</button>
       </div>
     </form>
     <div id="readonly" class="readonly" hidden>Read-only: this conversation belongs to another channel or the TUI. Start a new conversation to talk here.</div>
   </section>
-  <div id="lightbox" hidden><img alt="" /></div>
+  <div id="lightbox" hidden>
+    <button class="nav prev" title="Previous (←)">‹</button>
+    <figure><img alt="" /><figcaption></figcaption></figure>
+    <button class="nav next" title="Next (→)">›</button>
+  </div>
+  <div id="palette" hidden>
+    <div class="palette-box">
+      <input id="palette-input" placeholder="Jump to conversation…" autocomplete="off" />
+      <ul id="palette-list"></ul>
+    </div>
+  </div>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
