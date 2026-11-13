@@ -264,7 +264,7 @@ async function open(view) {
   renderStatus();
   if (current.chatId) {
     const { messages, status } = await api(`/api/history?chat=${encodeURIComponent(current.chatId)}`);
-    if (status) statusByChat.set(current.chatId, { chatId: current.chatId, ...status });
+    applyStatus(current.chatId, status);
     messages.forEach((m) => addMessage(m, { history: true }));
     renderStatus();
   } else {
@@ -397,6 +397,28 @@ function onStatus(ev) {
   if (wasBusy !== busy.has(ev.chatId)) renderSidebar();
 }
 
+// The server is the source of truth for "is a turn running". Events can be
+// missed (server restart mid-turn, SSE reconnect), so resync from it.
+function applyStatus(chatId, s) {
+  if (s && s.state && s.state !== "idle") {
+    statusByChat.set(chatId, { chatId, ...s });
+    busy.add(chatId);
+  } else {
+    statusByChat.delete(chatId);
+    busy.delete(chatId);
+  }
+}
+async function syncStatuses() {
+  try {
+    const { statuses } = await api("/api/statuses");
+    for (const chatId of new Set([...busy, ...statusByChat.keys()])) if (!statuses[chatId]) applyStatus(chatId, null);
+    for (const [chatId, s] of Object.entries(statuses)) applyStatus(chatId, s);
+    renderSidebar();
+    renderStatus();
+  } catch {}
+}
+setInterval(() => busy.size && syncStatuses(), 30000);
+
 function onProgress(ev) {
   if (ev.kind !== "tool") return; // thinking/status updates only drive the one-line status
   const list = steps.get(ev.chatId) ?? [];
@@ -472,6 +494,7 @@ function connect() {
   es.onopen = () => {
     connEl.textContent = "connected";
     connEl.className = "conn ok";
+    syncStatuses();
     if (current?.chatId) open(current).catch(() => {}); // catch up after reconnect
   };
   es.onerror = () => {
@@ -611,6 +634,7 @@ function renderCmdMenu() {
   cmdSel = Math.min(cmdSel, cmdItems.length - 1);
   cmdMenu.innerHTML = cmdItems.map(([name, desc], i) => `<li class="${i === cmdSel ? "sel" : ""}" data-i="${i}"><b>/${name}</b> <span>${esc(desc)}</span></li>`).join("");
   cmdMenu.hidden = false;
+  cmdMenu.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 }
 function pickCmd(i) {
   const item = cmdItems[i];

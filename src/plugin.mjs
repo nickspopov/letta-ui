@@ -512,6 +512,7 @@ function createWebUiAdapter(account) {
       if (req.method === "GET" && /^\/vendor\/[\w.\-]+$/.test(p)) return serveFile(req, res, join(PUBLIC_DIR, p.slice(1)));
       if (req.method === "GET" && /^\/(manifest\.webmanifest|icon(-\d+)?\.(png|svg))$/.test(p)) return serveFile(req, res, join(PUBLIC_DIR, p.slice(1)));
       if (req.method === "GET" && p === "/api/chats") return sendJson(res, 200, { accountId: account.accountId, chats: listChats() });
+      if (req.method === "GET" && p === "/api/statuses") return sendJson(res, 200, { statuses: Object.fromEntries(status) });
       if (req.method === "GET" && p === "/api/agents") return sendJson(res, 200, { agents: await listAgents() });
       if (req.method === "GET" && p === "/api/conversations") {
         return sendJson(res, 200, { conversations: await listConversations(url.searchParams.get("agent") ?? "") });
@@ -652,7 +653,9 @@ function createWebUiAdapter(account) {
       const detail = event.toolBatchTitle || event.toolTitle || event.message || null;
       for (const s of event.sources ?? []) {
         if (s.channel !== CHANNEL_ID) continue;
-        setStatus(s.chatId, "processing", detail);
+        // Only refresh the detail of a turn we know is running: a late progress
+        // event must not resurrect "processing" after the turn finished.
+        if (status.has(s.chatId)) setStatus(s.chatId, "processing", detail);
         broadcast({
           type: "progress",
           chatId: s.chatId,
