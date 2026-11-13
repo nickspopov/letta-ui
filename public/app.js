@@ -48,6 +48,7 @@ const statusByChat = new Map(); // chatId -> last status event
 let stepsOpen = false;
 let notifyOn = localStorage.getItem("notify") === "on";
 const drafts = new Map(); // chatId -> { text, pending }
+const reading = new Map(); // chatId -> Set of in-flight FileReader promises
 let hydrating = null; // chatId whose history is loading; live messages are buffered meanwhile
 let liveBuffer = [];
 let oldestId = null; // first loaded message id of the open webui chat (for "Load older")
@@ -556,13 +557,16 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+let everConnected = false;
 function connect() {
   const es = new EventSource("/api/events");
   es.onopen = () => {
     connEl.textContent = "connected";
     connEl.className = "conn ok";
     syncStatuses();
-    if (current?.chatId) open(current).catch(() => {}); // catch up after reconnect
+    // After a reconnect, reload the open chat to catch up on anything missed.
+    if (everConnected && current?.chatId) open(current).catch(() => {});
+    everConnected = true;
   };
   es.onerror = () => {
     connEl.textContent = "offline";
@@ -574,7 +578,7 @@ function connect() {
       const m = ev.message;
       if (m.chatId === current?.chatId) addMessage(m);
       const away = m.chatId !== current?.chatId || document.visibilityState !== "visible";
-      if (m.role !== "user") {
+      if (m.role === "agent") {
         if (away) {
           unread.set(m.chatId, (unread.get(m.chatId) || 0) + 1);
           saveUnread();
@@ -659,6 +663,7 @@ function choosePalette(i) {
   if (!item) return;
   closePalette();
   expanded.add(item.agent.id);
+  localStorage.setItem("expanded", JSON.stringify([...expanded]));
   open(viewOf(item.agent.id, item.c));
 }
 $("#palette-input").addEventListener("input", () => ((paletteSel = 0), renderPalette()));
@@ -732,6 +737,14 @@ function addFiles(files) {
   if (!chatId) return;
   for (const f of files) {
     const r = new FileReader();
+    let done;
+    const p = new Promise((res) => (done = res));
+    if (!reading.has(chatId)) reading.set(chatId, new Set());
+    reading.get(chatId).add(p);
+    r.onloadend = () => {
+      reading.get(chatId)?.delete(p);
+      done();
+    };
     r.onload = () => {
       const item = { name: f.name || "pasted.png", mime: f.type, dataBase64: String(r.result).split(",")[1] };
       if (current?.chatId === chatId) {
@@ -751,6 +764,9 @@ function addFiles(files) {
 async function send() {
   if (!current?.chatId) return;
   const chatId = current.chatId;
+  // Wait for attachments still being read, so Enter right after a paste doesn't drop them.
+  if (reading.get(chatId)?.size) await Promise.all([...reading.get(chatId)]);
+  if (current?.chatId !== chatId) return;
   const body = { chat: chatId, text: text.value, attachments: pending };
   if (!body.text.trim() && !pending.length) return;
   text.value = "";
@@ -833,11 +849,18 @@ document.addEventListener("drop", (e) => {
     const c = chats[0];
     if (c) current = { agentId: c.agentId, conversationId: c.conversationId, chatId: c.chatId, title: c.conversationId, archived: false };
   }
-  if (current) {
-    if (!convsByAgent.has(current.agentId)) await loadConvs(current.agentId).catch(() => {});
-    const found = findConv(current.conversationId);
-    if (found) current = viewOf(found.agentId, found.c);
-    await open(current);
-  } else renderHeader();
   connect();
+  if (current) {
+    try {
+      if (!convsByAgent.has(current.agentId)) await loadConvs(current.agentId);
+      const found = findConv(current.conversationId);
+      if (found) current = viewOf(found.agentId, found.c);
+      await open(current);
+    } catch (err) {
+      // Stale selection (deleted conversation, server hiccup): start clean.
+      current = null;
+      localStorage.removeItem("current");
+      renderHeader();
+    }
+  } else renderHeader();
 })();

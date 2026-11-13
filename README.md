@@ -42,7 +42,7 @@ is not modified.
 - Letta Code with the **local backend** (`letta --backend local`). Tested with 0.34.59.
   User channel plugins are marked as an MVP API upstream, so re-check after Letta updates.
 - macOS or Linux. No npm dependencies: the plugin uses `node:http` + Server-Sent Events
-  and runs under Bun or Node, whichever runs Letta.
+  and runs under Bun or Node ≥ 22 (it needs the global `WebSocket`), whichever runs Letta.
 
 ## Install
 
@@ -60,7 +60,8 @@ sh ~/projects/letta-ui/scripts/install.sh
 | `accounts.json` | one account: port, your sender id/name, allowlist (kept if it already exists) |
 
 Env overrides: `LETTA_UI_PORT` (default `4610`), `LETTA_UI_SENDER_ID` (default `$USER`),
-`LETTA_UI_SENDER_NAME`.
+`LETTA_UI_SENDER_NAME`. They only apply when `accounts.json` is created. To change them
+later, edit `accounts.json` (keep `allowedUsers` in sync with `sender_id`) and restart.
 
 Letta only discovers real directories there. A symlinked `webui/` folder is ignored, which
 is why the stub exists.
@@ -107,6 +108,12 @@ browser ──HTTP/SSE──▶ webui plugin (inside letta channel-gateway) ─�
   from the gateway's `--app-server-url` argument and uses the same protocol as the official
   clients (`agent_list`, `conversation_list`, `conversation_create`, `conversation_update`,
   `conversation_messages_list`).
+- Letta saves `routing.json` from its in-memory route cache, which can drop a route the
+  plugin appended before Letta ever used it. The plugin keeps its own index
+  (`data/chats-index.json`) and restores missing routes. To get rid of a web chat,
+  **Archive** it rather than deleting its route, or the route comes back.
+- Each agent's TUI `default` conversation is not returned by Letta's conversation list, so
+  it doesn't appear in the read-only section.
 - `MessageChannel` only exposes `media` for channels that advertise the `upload-file`
   action, so the plugin advertises `send` and `upload-file`.
 - Media sent by agents is **copied** into the data dir, so the history keeps working after

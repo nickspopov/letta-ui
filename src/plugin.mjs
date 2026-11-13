@@ -27,6 +27,7 @@ const PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../public")
 const DEFAULT_PORT = 4610;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const INLINE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const STALE_STATUS_MS = 45 * 60 * 1000;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -129,10 +130,12 @@ class Store {
     const src = resolve(path.startsWith("~") ? join(homedir(), path.slice(1)) : path);
     const st = statSync(src);
     if (!st.isFile()) throw new Error(`Not a file: ${src}`);
-    const name = safeName(fileName || basename(src));
+    let name = safeName(fileName || basename(src));
+    if (!extname(name) && extname(src)) name += extname(src).toLowerCase();
     const stored = `${randomUUID()}-${name}`;
     copyFileSync(src, join(this.mediaDir, stored));
-    const mime = mimeFor(name);
+    let mime = mimeFor(name);
+    if (mime === "application/octet-stream") mime = mimeFor(src); // filename override without an extension
     return { url: `/media/${stored}`, name, mime, kind: kindFor(mime), size: st.size };
   }
 
@@ -179,9 +182,13 @@ class AppServerClient {
         fail(new Error(`cannot connect to App Server ${url}`));
       };
       ws.onclose = () => {
+        if (this.ws !== ws && this.ws !== null) return; // a newer socket already replaced this one
         this.ws = null;
-        for (const p of this.pending.values()) p.fail(new Error("App Server connection closed"));
-        this.pending.clear();
+        for (const [id, p] of this.pending) {
+          if (p.ws !== ws) continue;
+          p.fail(new Error("App Server connection closed"));
+          this.pending.delete(id);
+        }
       };
       ws.onmessage = (e) => {
         let msg;
@@ -209,6 +216,7 @@ class AppServerClient {
         fail(new Error(`${command.type} timed out`));
       }, timeoutMs);
       this.pending.set(request_id, {
+        ws,
         ok: (m) => (clearTimeout(timer), ok(m)),
         fail: (e) => (clearTimeout(timer), fail(e)),
       });
@@ -230,7 +238,10 @@ function routingPath() {
 }
 
 function readRoutesFile() {
-  const data = readJson(routingPath(), { routes: [] });
+  if (!existsSync(routingPath())) return [];
+  // Throw on a transient read/parse error instead of returning [], so we never
+  // rewrite routing.json from a bogus empty snapshot.
+  const data = JSON.parse(readFileSync(routingPath(), "utf8"));
   return Array.isArray(data.routes) ? data.routes : [];
 }
 
@@ -268,6 +279,7 @@ function createWebUiAdapter(account) {
   const status = new Map(); // chatId -> {state, detail}
   let server = null;
   let running = false;
+  let sweeper = null;
 
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
 
@@ -285,23 +297,58 @@ function createWebUiAdapter(account) {
 
   function setStatus(chatId, state, detail) {
     if (state === "idle") status.delete(chatId);
-    else status.set(chatId, { state, detail });
+    else status.set(chatId, { state, detail, at: Date.now() });
     broadcast({ type: "status", chatId, state, detail: detail ?? null });
   }
 
   const app = new AppServerClient();
   let agentsCache = { at: 0, agents: [] };
 
+  // Letta saves routing.json from its in-memory cache, which can drop a route
+  // we appended before the gateway ever looked it up. Keep our own index of
+  // chats and put missing routes back (self-healing).
+  const indexPath = join(store.dataDir, "chats-index.json");
+  function readIndex() {
+    return readJson(indexPath, {});
+  }
+  function indexChat(chatId, agentId, conversationId) {
+    const idx = readIndex();
+    idx[chatId] = { agentId, conversationId, createdAt: idx[chatId]?.createdAt ?? new Date().toISOString() };
+    const tmp = `${indexPath}.${process.pid}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify(idx, null, 2)}\n`);
+    renameSync(tmp, indexPath);
+  }
+  function healRoutes() {
+    let routes;
+    try {
+      routes = readRoutesFile();
+    } catch {
+      return; // unreadable right now: never rewrite from a guess
+    }
+    const mine = routes.filter((r) => r.accountId === account.accountId);
+    const idx = readIndex();
+    for (const r of mine) if (!idx[r.chatId]) indexChat(r.chatId, r.agentId, r.conversationId); // adopt existing
+    for (const [chatId, c] of Object.entries(readIndex())) {
+      if (!mine.some((r) => r.chatId === chatId)) {
+        try {
+          ensureRoute(account.accountId, chatId, c.agentId, c.conversationId);
+          console.log(`[webui] restored missing route ${chatId}`);
+        } catch {}
+      }
+    }
+  }
+
   /** webui chats = our routes (one chat per agent+conversation). */
   function listChats() {
+    healRoutes();
     // Paused routes (/pause sets enabled=false) still belong to webui.
     return readRoutesFile()
       .filter((r) => r.accountId === account.accountId)
       .map((r) => ({ chatId: r.chatId, agentId: r.agentId, conversationId: r.conversationId, paused: r.enabled === false }));
   }
 
-  async function listAgents() {
-    if (Date.now() - agentsCache.at < 60_000) return agentsCache.agents;
+  async function listAgents({ fresh = false } = {}) {
+    if (!fresh && Date.now() - agentsCache.at < 60_000) return agentsCache.agents;
     const res = await app.request({ type: "agent_list", query: { limit: 200 } });
     const agents = (res.agents ?? []).map((a) => ({ id: a.id, name: a.name || a.id }));
     agentsCache = { at: Date.now(), agents };
@@ -347,7 +394,8 @@ function createWebUiAdapter(account) {
   }
 
   async function createChat(agentId, title) {
-    const agents = await listAgents();
+    let agents = await listAgents();
+    if (!agents.some((a) => a.id === agentId)) agents = await listAgents({ fresh: true });
     if (!agents.some((a) => a.id === agentId)) throw new Error(`unknown agent ${agentId}`);
     const res = await app.request({
       type: "conversation_create",
@@ -356,6 +404,7 @@ function createWebUiAdapter(account) {
     const conversationId = res.conversation?.id;
     if (!conversationId) throw new Error("conversation_create returned no id");
     const chatId = `c-${conversationId}`;
+    indexChat(chatId, agentId, conversationId);
     ensureRoute(account.accountId, chatId, agentId, conversationId);
     return { chatId, agentId, conversationId, title: title || null };
   }
@@ -394,15 +443,17 @@ function createWebUiAdapter(account) {
         const t = textOf(m.content).trim();
         if (t) out.push({ id: m.id, ts, role: "agent", text: t });
       } else if (m.message_type === "approval_request_message" || m.message_type === "tool_call_message") {
-        const call = m.tool_call ?? m.tool_calls?.[0];
-        if (call?.name !== "MessageChannel") continue;
-        channelTurn = true;
-        let args = {};
-        try {
-          args = JSON.parse(call.arguments || "{}");
-        } catch {}
-        const text = [args.message, args.media ? `📎 ${basename(String(args.media))}` : ""].filter(Boolean).join("\n\n");
-        if (text) out.push({ id: m.id, ts, role: "agent", text, source: args.channel ?? null });
+        const calls = m.tool_calls?.length ? m.tool_calls : m.tool_call ? [m.tool_call] : [];
+        calls.forEach((call, i) => {
+          if (call?.name !== "MessageChannel") return;
+          channelTurn = true;
+          let args = {};
+          try {
+            args = JSON.parse(call.arguments || "{}");
+          } catch {}
+          const text = [args.message, args.media ? `📎 ${basename(String(args.media))}` : ""].filter(Boolean).join("\n\n");
+          if (text) out.push({ id: `${m.id}:${i}`, ts, role: "agent", text, source: args.channel ?? null });
+        });
       }
     }
     return out;
@@ -453,11 +504,11 @@ function createWebUiAdapter(account) {
         return;
       }
       res.writeHead(206, { ...headers, "content-range": `bytes ${start}-${end}/${st.size}`, "content-length": end - start + 1 });
-      createReadStream(path, { start, end }).pipe(res);
+      createReadStream(path, { start, end }).on("error", () => res.destroy()).pipe(res);
       return;
     }
     res.writeHead(200, { ...headers, "content-length": st.size });
-    createReadStream(path).pipe(res);
+    createReadStream(path).on("error", () => res.destroy()).pipe(res);
   }
 
   function readBody(req, limit) {
@@ -631,6 +682,13 @@ function createWebUiAdapter(account) {
 
     async start(options) {
       if (running) return;
+      // If the gateway loses its App Server mid-turn no "finished" ever comes;
+      // don't show such a turn as running forever.
+      sweeper = setInterval(() => {
+        for (const [chatId, st] of status) if (Date.now() - st.at > STALE_STATUS_MS) setStatus(chatId, "idle");
+      }, 60_000);
+      sweeper.unref?.();
+      healRoutes();
       server = createServer((req, res) => void onRequest(req, res));
       await new Promise((ok, fail) => {
         server.once("error", fail);
@@ -646,6 +704,7 @@ function createWebUiAdapter(account) {
 
     async stop() {
       running = false;
+      clearInterval(sweeper);
       app.close();
       for (const res of clients) res.end();
       clients.clear();
@@ -682,7 +741,7 @@ function createWebUiAdapter(account) {
           if (event.outcome && event.outcome !== "completed" && event.error) {
             record({ chatId: s.chatId, role: "system", text: `Turn ended: ${event.outcome}: ${event.error}` });
           }
-        } else {
+        } else if (!(event.type === "queued" && status.get(s.chatId)?.state === "processing")) {
           setStatus(s.chatId, event.type);
         }
       }
