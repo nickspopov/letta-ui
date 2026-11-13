@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Letta UI</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="brand">Letta UI <span id="conn" class="conn">connecting…</span></div>
+    <div id="agents"></div>
+  </aside>
+  <section id="main">
+    <header>
+      <strong id="title">—</strong>
+      <span id="subtitle" class="subtitle"></span>
+      <button id="rename" class="ghost" hidden>Rename</button>
+    </header>
+    <main id="log"></main>
+    <div id="status" class="status" hidden></div>
+    <form id="composer">
+      <div id="pending" class="pending"></div>
+      <div class="row">
+        <label class="attach" title="Attach files">📎<input id="file" type="file" multiple hidden /></label>
+        <textarea id="text" rows="2" placeholder="Message… (Enter to send, Shift+Enter for newline; paste or drop images)"></textarea>
+        <button type="submit">Send</button>
+      </div>
+    </form>
+    <div id="readonly" class="readonly" hidden>Read-only: this conversation belongs to another channel or the TUI. Start a new conversation to talk here.</div>
+  </section>
+  <div id="lightbox" hidden><img alt="" /></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

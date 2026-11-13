@@ -1,0 +1,96 @@
+:root {
+  color-scheme: dark;
+  --bg: #15171c;
+  --panel: #1d2027;
+  --line: #2c303a;
+  --text: #e6e8ee;
+  --muted: #8b91a0;
+  --user: #2b3d5c;
+  --agent: #23262e;
+  --accent: #6ea8ff;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  background: var(--bg); color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#sidebar { width: 290px; flex-shrink: 0; border-right: 1px solid var(--line); background: var(--panel); overflow-y: auto; }
+.brand { padding: 12px 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
+.agent { border-bottom: 1px solid var(--line); }
+.agent-head { display: flex; align-items: center; gap: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
+.agent-head .caret { color: var(--muted); width: 12px; }
+.agent-head .new { margin-left: auto; }
+.conv { display: block; padding: 5px 14px 5px 32px; cursor: pointer; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv:hover { background: #262a33; }
+.conv.active { background: #2b3d5c; }
+.conv.ro { color: var(--muted); }
+.conv .when { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.group { padding: 6px 14px 2px 32px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; cursor: pointer; }
+.empty { padding: 4px 14px 8px 32px; font-size: 12px; color: var(--muted); }
+.subtitle { font-size: 12px; color: var(--muted); }
+button.ghost, button.new { background: transparent; color: var(--accent); border: 1px solid var(--line); padding: 2px 8px; font-weight: 500; font-size: 12px; }
+.readonly { padding: 12px 16px; border-top: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 13px; }
+.src { font-size: 10px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+.more { align-self: center; }
+header {
+  display: flex; gap: 12px; align-items: center;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+header select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+.conn { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--muted); }
+.conn.ok { color: #6fcf8f; }
+.conn.bad { color: #ff7b7b; }
+main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.msg { max-width: min(860px, 90%); padding: 8px 12px; border-radius: 10px; background: var(--agent); word-wrap: break-word; }
+.msg.user { align-self: flex-end; background: var(--user); }
+.msg.system { align-self: center; background: transparent; color: var(--muted); font-size: 13px; border: 1px dashed var(--line); white-space: pre-wrap; }
+.msg .meta { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.msg .body p { margin: 0 0 6px; }
+.msg .body p:last-child { margin-bottom: 0; }
+.msg pre { background: #0f1115; padding: 8px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+.msg code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.msg :not(pre) > code { background: #0f1115; padding: 1px 4px; border-radius: 4px; }
+.msg a { color: var(--accent); }
+.media { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.media img { max-width: 320px; max-height: 420px; border-radius: 6px; cursor: zoom-in; border: 1px solid var(--line); }
+.media video { max-width: 100%; max-height: 520px; border-radius: 6px; }
+.media figure { margin: 0; }
+.media figcaption { font-size: 12px; color: var(--muted); }
+.status { padding: 4px 16px; font-size: 13px; color: var(--muted); }
+.status::before { content: "● "; color: var(--accent); animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+form { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px; }
+form .row { display: flex; gap: 8px; align-items: flex-end; }
+textarea { flex: 1; resize: none; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; max-height: 240px; }
+button { background: var(--accent); color: #0b1020; border: 0; border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+.attach { cursor: pointer; font-size: 20px; padding: 4px; }
+.pending { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.pending span { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
+body.drag main { outline: 2px dashed var(--accent); outline-offset: -8px; }
+#lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+#lightbox[hidden] { display: none; }
+#lightbox img { max-width: 96vw; max-height: 96vh; }
+
+/* markdown */
+.msg .body > :first-child { margin-top: 0; }
+.msg .body > :last-child { margin-bottom: 0; }
+.msg .body h1, .msg .body h2, .msg .body h3, .msg .body h4 { margin: 10px 0 6px; line-height: 1.3; }
+.msg .body h1 { font-size: 1.3em; } .msg .body h2 { font-size: 1.18em; } .msg .body h3 { font-size: 1.06em; } .msg .body h4 { font-size: 1em; }
+.msg .body ul, .msg .body ol { margin: 4px 0 8px; padding-left: 22px; }
+.msg .body li { margin: 2px 0; }
+.msg .body li > p { margin: 0; }
+.msg .body input[type=checkbox] { margin-right: 6px; }
+.msg .body blockquote { margin: 6px 0; padding: 2px 10px; border-left: 3px solid var(--line); color: var(--muted); }
+.msg .body hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+.msg .body table { border-collapse: collapse; margin: 6px 0; font-size: 14px; display: block; overflow-x: auto; }
+.msg .body th, .msg .body td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+.msg .body th { background: #262a33; }
+.msg .body img { max-width: 100%; border-radius: 6px; }
+.msg .body pre { margin: 6px 0; }
+.msg .body li:has(> input[type=checkbox]) { list-style: none; margin-left: -18px; }
+.badge { margin-left: 6px; background: var(--accent); color: #0b1020; border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 700; }
+.busy { margin-left: 6px; color: var(--accent); font-size: 10px; animation: pulse 1.2s infinite; }
+.conv .name.unread { font-weight: 700; color: var(--text); }
