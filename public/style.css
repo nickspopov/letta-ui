@@ -1,3 +1,6 @@
+/* Any `display:` below would override the [hidden] attribute otherwise. */
+[hidden] { display: none !important; }
+
 :root {
   color-scheme: dark;
   --bg: #15171c;
@@ -150,3 +153,4 @@ button:disabled { opacity: .5; cursor: default; }
 #palette-list li { display: flex; gap: 6px; white-space: nowrap; overflow: hidden; }
 #palette-list li.ro { color: var(--muted); }
 .pal-meta { margin-left: auto; color: var(--muted); font-size: 11px; padding-left: 10px; }
+.paused { margin-left: 6px; font-size: 11px; color: #e0b45c; }

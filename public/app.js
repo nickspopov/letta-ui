@@ -47,6 +47,10 @@ const steps = new Map(); // chatId -> [{id, title, state, error}]
 const statusByChat = new Map(); // chatId -> last status event
 let stepsOpen = false;
 let notifyOn = localStorage.getItem("notify") === "on";
+const drafts = new Map(); // chatId -> { text, pending }
+let hydrating = null; // chatId whose history is loading; live messages are buffered meanwhile
+let liveBuffer = [];
+let oldestId = null; // first loaded message id of the open webui chat (for "Load older")
 const saveUnread = () => localStorage.setItem("unread", JSON.stringify(Object.fromEntries(unread)));
 
 const api = async (path, opts) => {
@@ -121,7 +125,7 @@ function findConv(conversationId) {
 }
 
 function viewOf(agentId, c) {
-  return { agentId, conversationId: c.id, chatId: c.chatId, title: c.title || c.id, archived: !!c.archived };
+  return { agentId, conversationId: c.id, chatId: c.chatId, title: c.title || c.id, archived: !!c.archived, paused: !!c.paused };
 }
 
 function convItem(agent, c) {
@@ -130,7 +134,8 @@ function convItem(agent, c) {
   a.className = `conv${c.chatId ? "" : " ro"}${isActive ? " active" : ""}`;
   const n = c.chatId ? unread.get(c.chatId) || 0 : 0;
   const dot = c.chatId && busy.has(c.chatId) ? '<span class="busy" title="working…">●</span>' : "";
-  a.innerHTML = `${c.chatId ? "💬" : "👁"} <span class="name${n ? " unread" : ""}">${esc(c.title || c.id)}</span>${dot}${n ? `<span class="badge">${n}</span>` : ""}<span class="when">${esc(ago(c.lastAt))}</span>`;
+  const paused = c.paused ? '<span class="paused" title="paused: send /resume">⏸</span>' : "";
+  a.innerHTML = `${c.chatId ? "💬" : "👁"} <span class="name${n ? " unread" : ""}">${esc(c.title || c.id)}</span>${paused}${dot}${n ? `<span class="badge">${n}</span>` : ""}<span class="when">${esc(ago(c.lastAt))}</span>`;
   a.title = c.id;
   a.onclick = () => open(viewOf(agent.id, c));
   return a;
@@ -208,17 +213,26 @@ async function newChat(agent) {
   }
 }
 
+// Rename/archive act on the conversation that was open when clicked, even if
+// the user switches while the request is in flight.
+async function refreshAfterMeta(target, patch) {
+  await loadConvs(target.agentId);
+  if (current?.conversationId === target.conversationId) {
+    Object.assign(current, patch);
+    localStorage.setItem("current", JSON.stringify(current));
+    renderHeader();
+  }
+  renderSidebar();
+}
+
 $("#rename").onclick = async () => {
   if (!current?.chatId) return;
-  const title = prompt("Rename conversation:", current.title || "");
+  const target = { ...current };
+  const title = prompt("Rename conversation:", target.title || "");
   if (!title) return;
   try {
-    await post("/api/rename", { conversationId: current.conversationId, title });
-    current.title = title;
-    localStorage.setItem("current", JSON.stringify(current));
-    await loadConvs(current.agentId);
-    renderSidebar();
-    renderHeader();
+    await post("/api/rename", { conversationId: target.conversationId, title });
+    await refreshAfterMeta(target, { title });
   } catch (err) {
     alert(`Rename failed: ${err.message}`);
   }
@@ -226,14 +240,11 @@ $("#rename").onclick = async () => {
 
 $("#archive").onclick = async () => {
   if (!current?.chatId) return;
-  const archived = !current.archived;
+  const target = { ...current };
+  const archived = !target.archived;
   try {
-    await post("/api/archive", { conversationId: current.conversationId, archived });
-    current.archived = archived;
-    localStorage.setItem("current", JSON.stringify(current));
-    await loadConvs(current.agentId);
-    renderSidebar();
-    renderHeader();
+    await post("/api/archive", { conversationId: target.conversationId, archived });
+    await refreshAfterMeta(target, { archived });
   } catch (err) {
     alert(`Archive failed: ${err.message}`);
   }
@@ -249,10 +260,26 @@ function renderHeader() {
   $("#archive").textContent = current?.archived ? "Unarchive" : "Archive";
   composer.hidden = !current?.chatId;
   readonlyEl.hidden = !current || !!current.chatId;
+  text.placeholder = current?.paused
+    ? "This chat is paused. Send /resume to let the agent receive messages again."
+    : "Message… (Enter to send, Shift+Enter for newline, / for commands; paste or drop images)";
+}
+
+function saveDraft() {
+  if (current?.chatId) drafts.set(current.chatId, { text: text.value, pending });
+}
+function restoreDraft() {
+  const d = (current?.chatId && drafts.get(current.chatId)) || { text: "", pending: [] };
+  text.value = d.text;
+  pending = d.pending;
+  renderPending();
+  cmdMenu.hidden = true;
 }
 
 async function open(view) {
+  saveDraft();
   current = view;
+  restoreDraft();
   if (current.chatId && unread.delete(current.chatId)) saveUnread();
   updateTabTitle();
   localStorage.setItem("current", JSON.stringify(current));
@@ -260,18 +287,57 @@ async function open(view) {
   renderHeader();
   seen.clear();
   log.innerHTML = "";
+  oldestId = null;
   stepsOpen = false;
   renderStatus();
-  if (current.chatId) {
-    const { messages, status } = await api(`/api/history?chat=${encodeURIComponent(current.chatId)}`);
-    applyStatus(current.chatId, status);
-    messages.forEach((m) => addMessage(m, { history: true }));
+  const chatId = current.chatId;
+  if (chatId) {
+    hydrating = chatId;
+    liveBuffer = [];
+    try {
+      const { messages, hasMore, status } = await api(`/api/history?chat=${encodeURIComponent(chatId)}`);
+      if (current?.chatId !== chatId) return;
+      applyStatus(chatId, status);
+      if (hasMore) log.appendChild(loadOlderButton());
+      oldestId = messages[0]?.id ?? null;
+      messages.forEach((m) => addMessage(m, { history: true }));
+    } finally {
+      if (hydrating === chatId) {
+        hydrating = null;
+        // Replies that arrived while history was loading, in order.
+        liveBuffer.sort((a, b) => a.ts - b.ts).forEach((m) => addMessage(m));
+        liveBuffer = [];
+      }
+    }
     renderStatus();
   } else {
     roBefore = null;
     await loadReadOnly();
   }
   log.scrollTop = log.scrollHeight;
+}
+
+function loadOlderButton() {
+  const b = document.createElement("button");
+  b.className = "ghost more";
+  b.textContent = "Load older";
+  b.onclick = loadOlderWebui;
+  return b;
+}
+
+async function loadOlderWebui() {
+  const chatId = current?.chatId;
+  if (!chatId || !oldestId) return;
+  const { messages, hasMore } = await api(`/api/history?chat=${encodeURIComponent(chatId)}&before=${encodeURIComponent(oldestId)}`);
+  if (current?.chatId !== chatId) return;
+  log.querySelector(".more")?.remove();
+  const prevHeight = log.scrollHeight;
+  const frag = document.createDocumentFragment();
+  if (hasMore) frag.appendChild(loadOlderButton());
+  for (const m of messages) if (!seen.has(m.id)) (seen.add(m.id), frag.appendChild(renderMessage(m)));
+  oldestId = messages[0]?.id ?? oldestId;
+  log.prepend(frag);
+  log.scrollTop = log.scrollHeight - prevHeight;
 }
 
 async function loadReadOnly(older = false) {
@@ -342,6 +408,7 @@ function mergeIntoPrevious(m) {
 
 function addMessage(m, { history = false } = {}) {
   if (!current?.chatId || m.chatId !== current.chatId || seen.has(m.id)) return;
+  if (!history && hydrating === m.chatId) return void liveBuffer.push(m);
   seen.add(m.id);
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
   const div = mergeIntoPrevious(m) ?? log.appendChild(renderMessage(m));
@@ -661,12 +728,21 @@ function renderPending() {
 }
 
 function addFiles(files) {
-  if (!current?.chatId) return;
+  const chatId = current?.chatId;
+  if (!chatId) return;
   for (const f of files) {
     const r = new FileReader();
     r.onload = () => {
-      pending.push({ name: f.name || "pasted.png", mime: f.type, dataBase64: String(r.result).split(",")[1] });
-      renderPending();
+      const item = { name: f.name || "pasted.png", mime: f.type, dataBase64: String(r.result).split(",")[1] };
+      if (current?.chatId === chatId) {
+        pending.push(item);
+        renderPending();
+      } else {
+        // The user switched chats while the file was being read: keep it in that chat's draft.
+        const d = drafts.get(chatId) ?? { text: "", pending: [] };
+        d.pending.push(item);
+        drafts.set(chatId, d);
+      }
     };
     r.readAsDataURL(f);
   }
@@ -674,16 +750,34 @@ function addFiles(files) {
 
 async function send() {
   if (!current?.chatId) return;
-  const body = { chat: current.chatId, text: text.value, attachments: pending };
+  const chatId = current.chatId;
+  const body = { chat: chatId, text: text.value, attachments: pending };
   if (!body.text.trim() && !pending.length) return;
   text.value = "";
   pending = [];
   renderPending();
   cmdMenu.hidden = true;
+  drafts.delete(chatId);
   try {
     await post("/api/send", body);
+    // /pause and /resume flip the route; refresh so the UI reflects it.
+    if (/^\/(pause|resume)\b/.test(body.text.trim())) {
+      const agentId = current?.agentId;
+      setTimeout(async () => {
+        await loadConvs(agentId);
+        const found = findConv(current?.conversationId);
+        if (found && current?.chatId === chatId) (current.paused = !!found.c.paused), renderHeader();
+        renderSidebar();
+      }, 800);
+    }
   } catch (err) {
-    log.appendChild(renderMessage({ role: "system", ts: Date.now(), text: `Send failed: ${err.message}` }));
+    // Give the draft back instead of losing it.
+    if (current?.chatId === chatId && !text.value && !pending.length) {
+      text.value = body.text;
+      pending = body.attachments;
+      renderPending();
+    } else drafts.set(chatId, { text: body.text, pending: body.attachments });
+    if (current?.chatId === chatId) log.appendChild(renderMessage({ role: "system", ts: Date.now(), text: `Not sent: ${err.message}` }));
   }
 }
 

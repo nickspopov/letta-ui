@@ -101,17 +101,27 @@ class Store {
     appendFileSync(this.chatFile(entry.chatId), `${JSON.stringify(entry)}\n`);
   }
 
-  history(chatId, limit = 500) {
+  /** Latest `limit` messages, or the `limit` messages before message id `before`. */
+  history(chatId, { before = null, limit = 300 } = {}) {
     const file = this.chatFile(chatId);
-    if (!existsSync(file)) return [];
-    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-    return lines.slice(-limit).flatMap((l) => {
-      try {
-        return [JSON.parse(l)];
-      } catch {
-        return [];
-      }
-    });
+    if (!existsSync(file)) return { messages: [], hasMore: false };
+    const all = readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l)];
+        } catch {
+          return [];
+        }
+      });
+    let end = all.length;
+    if (before) {
+      const i = all.findIndex((m) => m.id === before);
+      if (i >= 0) end = i;
+    }
+    const start = Math.max(0, end - limit);
+    return { messages: all.slice(start, end), hasMore: start > 0 };
   }
 
   /** Copy an agent-provided local file into the media store (stable snapshot). */
@@ -284,9 +294,10 @@ function createWebUiAdapter(account) {
 
   /** webui chats = our routes (one chat per agent+conversation). */
   function listChats() {
+    // Paused routes (/pause sets enabled=false) still belong to webui.
     return readRoutesFile()
-      .filter((r) => r.accountId === account.accountId && r.enabled !== false)
-      .map((r) => ({ chatId: r.chatId, agentId: r.agentId, conversationId: r.conversationId }));
+      .filter((r) => r.accountId === account.accountId)
+      .map((r) => ({ chatId: r.chatId, agentId: r.agentId, conversationId: r.conversationId, paused: r.enabled === false }));
   }
 
   async function listAgents() {
@@ -299,19 +310,38 @@ function createWebUiAdapter(account) {
 
   /** All conversations of an agent; ones routed to webui are writable, the rest read-only. */
   async function listConversations(agentId) {
-    const res = await app.request({ type: "conversation_list", query: { agent_id: agentId, limit: 100 } });
-    const byConv = new Map(listChats().filter((c) => c.agentId === agentId).map((c) => [c.conversationId, c.chatId]));
-    const convs = (res.conversations ?? []).map((c) => ({
+    // Page through the whole list (the App Server caps each page).
+    const raw = [];
+    for (let after = null, page = 0; page < 50; page++) {
+      const res = await app.request({ type: "conversation_list", query: { agent_id: agentId, limit: 100, ...(after ? { after } : {}) } });
+      const batch = res.conversations ?? [];
+      raw.push(...batch);
+      if (batch.length < 100) break;
+      after = batch[batch.length - 1].id;
+    }
+    const chats = listChats().filter((c) => c.agentId === agentId);
+    const byConv = new Map(chats.map((c) => [c.conversationId, c]));
+    const toConv = (c) => ({
       id: c.id,
       title: c.summary || null,
       lastAt: c.last_message_at || c.updated_at || c.created_at,
-      chatId: byConv.get(c.id) ?? null,
+      chatId: byConv.get(c.id)?.chatId ?? null,
+      paused: byConv.get(c.id)?.paused === true,
       archived: c.archived === true,
-    }));
-    // Routed conversations the backend list didn't return (e.g. created after
-    // this process scanned storage) still need to be reachable.
-    for (const [conversationId, chatId] of byConv) {
-      if (!convs.some((c) => c.id === conversationId)) convs.unshift({ id: conversationId, title: null, lastAt: null, chatId });
+    });
+    const convs = raw.map(toConv);
+    // Routed conversations the list didn't return (created after this process
+    // scanned storage): fetch their real metadata instead of inventing it.
+    for (const chat of chats) {
+      if (convs.some((c) => c.id === chat.conversationId)) continue;
+      try {
+        const r = await app.request({ type: "conversation_retrieve", conversation_id: chat.conversationId });
+        if (r.conversation) {
+          convs.unshift(toConv(r.conversation));
+          continue;
+        }
+      } catch {}
+      convs.unshift({ id: chat.conversationId, title: null, lastAt: null, chatId: chat.chatId, paused: chat.paused, archived: false });
     }
     return convs;
   }
@@ -396,7 +426,7 @@ function createWebUiAdapter(account) {
     res.end(JSON.stringify(body));
   }
 
-  function serveFile(req, res, path) {
+  function serveFile(req, res, path, untrusted = false) {
     let st;
     try {
       st = statSync(path);
@@ -406,6 +436,12 @@ function createWebUiAdapter(account) {
       return;
     }
     const headers = { "content-type": mimeFor(path), "accept-ranges": "bytes", "cache-control": "no-cache" };
+    if (untrusted) {
+      // Agent/user files (e.g. an HTML report) must never run script on this
+      // origin: sandbox gives them an opaque origin with scripts disabled.
+      headers["content-security-policy"] = "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'";
+      headers["x-content-type-options"] = "nosniff";
+    }
     const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
     if (range && (range[1] || range[2])) {
       let start = range[1] ? Number(range[1]) : st.size - Number(range[2]);
@@ -452,7 +488,10 @@ function createWebUiAdapter(account) {
     const chatId = String(body.chat || "").trim();
     const text = String(body.text ?? "");
     if (!chatId) return sendJson(res, 400, { error: "chat required" });
-    if (!listChats().some((c) => c.chatId === chatId)) return sendJson(res, 400, { error: "chat is not routed to webui" });
+    const chat = listChats().find((c) => c.chatId === chatId);
+    if (!chat) return sendJson(res, 400, { error: "chat is not routed to webui" });
+    if (chat.paused && !/^\/\w/.test(text.trim())) return sendJson(res, 409, { error: "this chat is paused; send /resume first" });
+    if (!adapter.onMessage) return sendJson(res, 503, { error: "channel not wired yet" });
 
     const attachments = [];
     const shown = [];
@@ -477,7 +516,6 @@ function createWebUiAdapter(account) {
     if (!text.trim() && attachments.length === 0) return sendJson(res, 400, { error: "empty message" });
 
     const entry = record({ chatId, role: "user", text, media: shown });
-    if (!adapter.onMessage) return sendJson(res, 503, { error: "channel not wired yet" });
     // Fire and forget: the agent turn can take minutes; replies arrive via SSE.
     adapter
       .onMessage({
@@ -556,7 +594,8 @@ function createWebUiAdapter(account) {
       }
       if (req.method === "GET" && p === "/api/history") {
         const chatId = url.searchParams.get("chat") ?? "";
-        return sendJson(res, 200, { messages: store.history(chatId), status: status.get(chatId) ?? null });
+        const page = store.history(chatId, { before: url.searchParams.get("before") });
+        return sendJson(res, 200, { ...page, status: status.get(chatId) ?? null });
       }
       if (req.method === "GET" && p === "/api/events") {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
@@ -574,7 +613,7 @@ function createWebUiAdapter(account) {
         if (req.method === "GET" && p.startsWith(prefix)) {
           const file = resolve(dir, decodeURIComponent(p.slice(prefix.length)));
           if (!file.startsWith(dir + sep)) return res.writeHead(400).end();
-          return serveFile(req, res, file);
+          return serveFile(req, res, file, true);
         }
       }
       res.writeHead(404).end("not found");
