@@ -269,15 +269,31 @@ function renderHeader() {
 function saveDraft() {
   if (current?.chatId) drafts.set(current.chatId, { text: text.value, pending });
 }
+// Grow the input with its content, up to half the window (CSS max-height), then scroll.
+function autoGrow() {
+  text.style.height = "auto";
+  text.style.height = `${text.scrollHeight + 2}px`;
+}
+// Focus the input with the caret after the last character, scrolled to the end.
+function focusComposer() {
+  if (!current?.chatId || composer.hidden) return;
+  text.focus({ preventScroll: true });
+  const end = text.value.length;
+  text.setSelectionRange(end, end);
+  text.scrollTop = text.scrollHeight;
+}
 function restoreDraft() {
   const d = (current?.chatId && drafts.get(current.chatId)) || { text: "", pending: [] };
   text.value = d.text;
+  autoGrow();
   pending = d.pending;
   renderPending();
   cmdMenu.hidden = true;
 }
 
 async function open(view) {
+  // Re-opening the same chat (reconnect) must not move the caret while the user types.
+  const keepCaret = current?.chatId === view.chatId && document.activeElement === text;
   saveDraft();
   current = view;
   restoreDraft();
@@ -286,6 +302,7 @@ async function open(view) {
   localStorage.setItem("current", JSON.stringify(current));
   renderSidebar();
   renderHeader();
+  if (!keepCaret) focusComposer();
   seen.clear();
   log.innerHTML = "";
   oldestId = null;
@@ -634,7 +651,7 @@ async function openPalette() {
 }
 function closePalette() {
   palette.hidden = true;
-  text.focus();
+  focusComposer();
 }
 function renderPalette() {
   const q = $("#palette-input").value.trim().toLowerCase();
@@ -712,6 +729,7 @@ function pickCmd(i) {
   const item = cmdItems[i];
   if (!item) return;
   text.value = `/${item[0]}`;
+  autoGrow();
   cmdMenu.hidden = true;
   text.focus();
 }
@@ -719,7 +737,8 @@ cmdMenu.addEventListener("mousedown", (e) => {
   const li = e.target.closest("li[data-i]");
   if (li) (e.preventDefault(), pickCmd(Number(li.dataset.i)));
 });
-text.addEventListener("input", () => ((cmdSel = 0), renderCmdMenu()));
+text.addEventListener("input", () => ((cmdSel = 0), autoGrow(), renderCmdMenu()));
+window.addEventListener("resize", autoGrow);
 text.addEventListener("blur", () => setTimeout(() => (cmdMenu.hidden = true), 100));
 
 function renderPending() {
@@ -770,6 +789,7 @@ async function send() {
   const body = { chat: chatId, text: text.value, attachments: pending };
   if (!body.text.trim() && !pending.length) return;
   text.value = "";
+  autoGrow();
   pending = [];
   renderPending();
   cmdMenu.hidden = true;
@@ -790,6 +810,7 @@ async function send() {
     // Give the draft back instead of losing it.
     if (current?.chatId === chatId && !text.value && !pending.length) {
       text.value = body.text;
+      autoGrow();
       pending = body.attachments;
       renderPending();
     } else drafts.set(chatId, { text: body.text, pending: body.attachments });
