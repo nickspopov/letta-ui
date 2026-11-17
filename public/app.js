@@ -433,9 +433,17 @@ function addMessage(m, { history = false } = {}) {
   const stick = history || nearBottom || m.role === "user";
   if (stick) log.scrollTop = log.scrollHeight;
   for (const v of div.querySelectorAll("img, video")) {
-    v.addEventListener(v.tagName === "IMG" ? "load" : "loadedmetadata", () => stick && (log.scrollTop = log.scrollHeight), { once: true });
+    // Late image loads follow the bottom only if the user is still there (they may have scrolled up since).
+    v.addEventListener(v.tagName === "IMG" ? "load" : "loadedmetadata", () => atBottom && (log.scrollTop = log.scrollHeight), { once: true });
   }
 }
+
+// When the log viewport shrinks (status bar appears, steps expand, the input
+// grows), keep the latest message in view if the user was at the bottom.
+// Shrinking doesn't fire 'scroll', so `atBottom` still holds the pre-resize state.
+let atBottom = true;
+log.addEventListener("scroll", () => (atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40), { passive: true });
+new ResizeObserver(() => atBottom && (log.scrollTop = log.scrollHeight)).observe(log);
 
 // ── Status, steps, stop ─────────────────────────────────────────────────────
 function renderStatus() {
